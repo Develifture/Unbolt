@@ -133,6 +133,10 @@ The package script creates Unbolt-0.1.0-windows-x64 with only the three producti
 
 Pull requests are welcome. For code changes, run the checks in [Build from source](#build-from-source), describe the behavior being changed, and keep cleanup and recovery protections intact.
 
+## Acknowledgments
+
+Unbolt was developed with assistance from [OpenAI Codex](https://github.com/codex).
+
 ## License
 
 The independently written source is MIT licensed. Dependencies retain their own licenses and notices.
