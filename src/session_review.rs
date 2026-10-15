@@ -147,11 +147,18 @@ fn check_application(app: &Application, cancel: &AtomicBool) -> UnboltResult<()>
     if current.cancelled || !current.errors.is_empty() {
         return Err("Current application inventory could not be verified".into());
     }
-    if current
-        .apps
-        .iter()
-        .any(|a| a.id == app.id || a.sources.iter().any(|s| app.sources.contains(s)))
-    {
+    if current.apps.iter().any(|a| {
+        a.id == app.id
+                || a.sources.iter().any(|s| app.sources.contains(s))
+                // A replacement registration can have a new key and version.
+                // Ambiguous product identity must keep recovery blocked even
+                // when no saved installation folder remains to inspect.
+                || (!app.name.trim().is_empty()
+                    && a.name.trim().eq_ignore_ascii_case(app.name.trim())
+                    && a.publisher.trim().eq_ignore_ascii_case(app.publisher.trim()))
+                || (!app.uninstall.trim().is_empty()
+                    && a.uninstall.trim().eq_ignore_ascii_case(app.uninstall.trim()))
+    }) {
         return Err("The application has been registered again; refresh before continuing".into());
     }
     if let Some(path) = &app.location {
@@ -303,7 +310,7 @@ mod tests {
                 };
                 let app = Application {
                     id: inventory::source_id(&source),
-                    name: "Unbolt owned session fixture".into(),
+                    name: format!("Unbolt owned session fixture {}", recovery::unique_id()),
                     publisher: String::new(),
                     version: "1".into(),
                     location: Some(root.join("App")),
@@ -496,6 +503,111 @@ mod tests {
             assert!(result.is_err());
             assert!(process::assert_cleanup_ready(&session.application_id).is_err());
         });
+    }
+    #[test]
+    fn replacement_registration_with_new_source_invalidates_review_without_a_folder() {
+        for missing_folder in [false, true] {
+            fixture("completed", 3010, Some(100), |manifest, session| {
+                use winreg::{RegKey, enums::*};
+                let mut app = backup_delete::saved_application(manifest).unwrap();
+                if missing_folder {
+                    app.location = Some(recovery::data_dir().join("absent-folder"));
+                } else {
+                    app.location = None;
+                }
+                fs::write(manifest, serde_json::to_vec(&app).unwrap()).unwrap();
+                let plan = check(manifest, session, 101).unwrap();
+                let key_path = format!(
+                    "{}\\UnboltReplacement{}",
+                    inventory::UNINSTALL_ROOT,
+                    recovery::unique_id()
+                );
+                struct OwnedKey(String);
+                impl Drop for OwnedKey {
+                    fn drop(&mut self) {
+                        let _ = RegKey::predef(HKEY_CURRENT_USER).delete_subkey_all(&self.0);
+                    }
+                }
+                let _owned = OwnedKey(key_path.clone());
+                let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+                    .create_subkey(&key_path)
+                    .unwrap();
+                key.set_value("DisplayName", &app.name).unwrap();
+                key.set_value("Publisher", &app.publisher).unwrap();
+                key.set_value("DisplayVersion", &app.version).unwrap();
+                key.set_value("UninstallString", &app.uninstall).unwrap();
+                if let Some(path) = &app.location {
+                    key.set_value("InstallLocation", &path.display().to_string())
+                        .unwrap();
+                }
+                let replacement_id = inventory::source_id(&RegistrySource {
+                    hive: "HKCU".into(),
+                    view: KEY_WOW64_64KEY,
+                    key: key_path,
+                });
+                assert_ne!(app.id, replacement_id);
+                let _active = process::reserve_application(
+                    &recovery::data_dir().join("process-sessions"),
+                    &replacement_id,
+                )
+                .unwrap();
+                assert!(check(manifest, session, 101).is_err());
+                assert!(plan.execute_at_boot(&AtomicBool::new(false), 101).is_err());
+                assert!(!read_session(&session.id).unwrap().0.restart_resolved());
+            });
+        }
+    }
+    #[test]
+    fn pending_sessions_keep_exports_until_resolution_and_recheck_after_confirmation() {
+        for (state, code) in [("completed-needs-review", 0), ("completed", 3010)] {
+            fixture(state, code, Some(100), |manifest, session| {
+                let app = backup_delete::saved_application(manifest).unwrap();
+                let record = crate::records::BackupRecord {
+                    id: manifest
+                        .parent()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into(),
+                    kind: "Registration export".into(),
+                    application: app.name,
+                    state: "Exported".into(),
+                    original: String::new(),
+                    manifest: manifest.into(),
+                    recoverable: false,
+                };
+                let flag = AtomicBool::new(false);
+                assert!(backup_delete::prepare(std::slice::from_ref(&record), &flag).is_err());
+                check(manifest, session, 101)
+                    .unwrap()
+                    .execute_at_boot(&flag, 101)
+                    .unwrap();
+                let plan = backup_delete::prepare(std::slice::from_ref(&record), &flag).unwrap();
+                // A new pending session after confirmation must retain the export.
+                process::save(&recovery::data_dir().join("process-sessions"), session).unwrap();
+                assert!(plan.execute(&flag).is_err());
+                assert!(manifest.exists());
+                check(manifest, session, 101)
+                    .unwrap()
+                    .execute_at_boot(&flag, 101)
+                    .unwrap();
+                let plan = backup_delete::prepare(std::slice::from_ref(&record), &flag).unwrap();
+                let active = process::reserve_application(
+                    &recovery::data_dir().join("process-sessions"),
+                    &session.application_id,
+                )
+                .unwrap();
+                assert!(plan.execute(&flag).is_err());
+                assert!(manifest.exists());
+                drop(active);
+                backup_delete::prepare(&[record], &flag)
+                    .unwrap()
+                    .execute(&flag)
+                    .unwrap();
+                assert!(!manifest.exists());
+            });
+        }
     }
     #[test]
     fn resolving_one_record_does_not_clear_other_pending_sessions() {

@@ -173,9 +173,14 @@ pub fn run_mode(
     if current_command.executable != cmd.executable || current_command.arguments != cmd.arguments {
         return Err("Uninstall command changed since review; refresh before uninstall.".into());
     }
+    // Hold the same lease from export creation through installer monitoring,
+    // so backup disposal cannot remove recovery evidence before launch.
+    let storage = recovery::data_dir().join("process-sessions");
+    let lease = process::reserve_application(&storage, &app.id)?;
+    process::assert_idle(&app.id)?;
     let backup = recovery::backup_registration(current_app)?;
     recovery::history("uninstall-start", &app.name, &cmd.original)?;
-    let result = match process::run(&cmd, &app.id, cancel) {
+    let result = match process::run_reserved(&cmd, &app.id, cancel, &storage, lease) {
         Ok(result) => result,
         Err(e) => {
             let _ = recovery::history("uninstall-launch-failed", &app.name, &e);

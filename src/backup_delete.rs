@@ -1,6 +1,6 @@
 //! Explicit disposal of selected local backups. Manifest payload paths are
 //! descriptive only: deletion is restricted to the selected owned directory.
-use crate::{UnboltResult, model::*, records::BackupRecord, recovery, scanner};
+use crate::{UnboltResult, model::*, process, records::BackupRecord, recovery, scanner};
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -23,6 +23,7 @@ struct Item {
     directory: PathBuf,
     signature: u64,
     nodes: Vec<Node>,
+    export_application: Option<String>,
 }
 pub struct Plan {
     root: PathBuf,
@@ -92,6 +93,15 @@ pub fn saved_application(manifest: &Path) -> UnboltResult<Application> {
 pub fn prepare(records: &[BackupRecord], cancel: &AtomicBool) -> UnboltResult<Plan> {
     prepare_at(&recovery::data_dir(), records, cancel)
 }
+fn export_unused(root: &Path, application_id: &str) -> UnboltResult<()> {
+    if process::sessions_at(&root.join("process-sessions"))?
+        .iter()
+        .any(|s| s.application_id == application_id && s.needs_registration_export())
+    {
+        return Err("This registration backup is needed by a pending uninstall. Review the uninstall result in Operation history before deleting its backup.".into());
+    }
+    Ok(())
+}
 fn prepare_at(root: &Path, records: &[BackupRecord], cancel: &AtomicBool) -> UnboltResult<Plan> {
     if records.is_empty() {
         return Err("Select at least one backup".into());
@@ -140,6 +150,16 @@ fn prepare_at(root: &Path, records: &[BackupRecord], cancel: &AtomicBool) -> Unb
         {
             return Err("Backup state changed; refresh and review again".into());
         }
+        let export_application = if export {
+            let id = value["id"].as_str().filter(|id| !id.is_empty()).ok_or(
+                "Registration export has no application identity; retain it for recovery review",
+            )?;
+            let _lease = process::reserve_application(&plan.root.join("process-sessions"), id)?;
+            export_unused(&plan.root, id)?;
+            Some(id.to_owned())
+        } else {
+            None
+        };
         if plan.items.iter().any(|i| i.directory == directory) {
             continue;
         }
@@ -179,6 +199,7 @@ fn prepare_at(root: &Path, records: &[BackupRecord], cancel: &AtomicBool) -> Unb
             directory,
             signature,
             nodes,
+            export_application,
         });
     }
     Ok(plan)
@@ -200,6 +221,23 @@ impl Plan {
         )
     }
     pub fn execute(self, cancel: &AtomicBool) -> UnboltResult<String> {
+        // Retain one lease per product for the complete operation. This also
+        // protects the gap between export creation and process-session save.
+        let mut ids = self
+            .items
+            .iter()
+            .filter_map(|i| i.export_application.as_ref())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        let mut leases = Vec::new();
+        for id in ids {
+            leases.push(process::reserve_application(
+                &self.root.join("process-sessions"),
+                id,
+            )?);
+            export_unused(&self.root, id)?;
+        }
         // Validate the complete selection before deleting any selected backup.
         for item in &self.items {
             if cancelled(cancel) {
@@ -398,7 +436,11 @@ mod tests {
             } else {
                 "manifest.json"
             });
-            fs::write(&manifest, format!(r#"{{"state":"{state}"}}"#)).unwrap();
+            fs::write(
+                &manifest,
+                format!(r#"{{"state":"{state}","id":"owned-export-fixture"}}"#),
+            )
+            .unwrap();
             records.push(BackupRecord {
                 id: directory.file_name().unwrap().to_string_lossy().into(),
                 kind: store.into(),

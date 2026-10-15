@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
 - Reject changed application details, including installation folders and merged registry sources, before uninstall backup or launch. Rejected attempts do not seed a leftover preview.
 - Add Operation history → Review pending uninstall for supported deferred sessions. A later Windows boot, absent registration, stopped recorded processes, and fresh folder-use checks are required. Legacy records first capture a boot reference. Resolution preserves the original exit result and does not perform cleanup.
 - Add regression coverage for stale uninstall review and restart-session resolution. Actual UAC/reboot validation remains outstanding.
+- Retain registration exports while an installer is active or a deferred session needs them. Recheck before deletion and hold the application reservation from export creation through installer monitoring.
+- Detect replacement registrations by product metadata even when their registry source changes and the old installation folder is absent.
+- Include this changelog in portable packages.
 
 ## 0.1.0
 

@@ -145,6 +145,10 @@ impl Session {
     fn terminal(&self) -> bool {
         self.state == "completed" || self.restart_resolved()
     }
+    pub(crate) fn needs_registration_export(&self) -> bool {
+        !self.restart_resolved()
+            && (!self.terminal() || matches!(self.exit_code, Some(3010 | 1641)))
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessResult {
@@ -398,12 +402,24 @@ pub fn run_at(
     if cancelled(cancel) {
         return Err("Cancelled before launch".into());
     }
+    let lease = reserve_application(storage, application_id)?;
+    run_reserved(cmd, application_id, cancel, storage, lease)
+}
+pub(crate) fn run_reserved(
+    cmd: &UninstallCommand,
+    application_id: &str,
+    cancel: &AtomicBool,
+    storage: &Path,
+    lease: ApplicationLease,
+) -> UnboltResult<ProcessResult> {
+    if cancelled(cancel) {
+        return Err("Cancelled before launch".into());
+    }
     // Reserve writable session storage before target execution begins.
     fs::create_dir_all(storage).map_err(|e| e.to_string())?;
     let probe = storage.join(format!("{}.probe", recovery::unique_id()));
     fs::write(&probe, b"session").map_err(|e| e.to_string())?;
     fs::remove_file(probe).map_err(|e| e.to_string())?;
-    let lease = reserve_application(storage, application_id)?;
     for session in sessions_at(storage)?
         .into_iter()
         .filter(|s| s.application_id == application_id)

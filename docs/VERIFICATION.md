@@ -2,7 +2,7 @@
 
 ## Source checks
 
-The published 0.1.0 baseline has 71 passing checks. The review fixes add 11 regression checks, bringing the current source suite to 82: 67 library checks, one GUI icon check, one files-in-use fixture, five helper fixtures, one Hunter fixture, and seven process-lifecycle fixtures. Run the current source checks again when changing runtime behavior.
+The published 0.1.0 baseline has 71 passing checks. The review fixes add 13 regression checks, bringing the current source suite to 84: 69 library checks, one GUI icon check, one files-in-use fixture, five helper fixtures, one Hunter fixture, and seven process-lifecycle fixtures. Run the current source checks again when changing runtime behavior.
 
 Both production and test-fixtures Clippy configurations are checked with warnings denied. Fixture launchers are feature gated and excluded from portable packages.
 
@@ -20,6 +20,7 @@ Both production and test-fixtures Clippy configurations are checked with warning
 - Disposal of all five supported backup types, retained originals and sibling backups, cancellation, stale review, nested manifest names, and junction rejection.
 - Changed installation location and newly merged registration sources with an unchanged uninstall command are rejected before backup or process launch.
 - Deferred-session resolution preserves original exit codes and requires a strictly later boot counter. Controlled boot inputs exercise restart rules, legacy-record reference capture, cancellation, stale confirmation, running process/lease rejection, reappearing registration, multiple pending records, and redirected storage.
+- Pending-session exports cannot be deleted before resolution, including a new pending session or active operation appearing after deletion review. Export deletion becomes available after resolution. Replacement registrations with new source IDs invalidate both pending and confirmed reviews, including absent installation folders.
 
 ## Native interface checks
 
