@@ -2,7 +2,7 @@
 
 ## Source checks
 
-The release baseline has 71 passing checks: 56 library checks, one GUI icon check, one files-in-use fixture, five helper fixtures, one Hunter fixture, and seven process-lifecycle fixtures. Run the current source checks again when changing runtime behavior.
+The published 0.1.0 baseline has 71 passing checks. The review fixes add 11 regression checks, bringing the current source suite to 82: 67 library checks, one GUI icon check, one files-in-use fixture, five helper fixtures, one Hunter fixture, and seven process-lifecycle fixtures. Run the current source checks again when changing runtime behavior.
 
 Both production and test-fixtures Clippy configurations are checked with warnings denied. Fixture launchers are feature gated and excluded from portable packages.
 
@@ -18,12 +18,16 @@ Both production and test-fixtures Clippy configurations are checked with warning
 - Hunter process/window identity and exact startup-target matching.
 - Startup disable/restore, shortcut metadata, and interrupted-record handling.
 - Disposal of all five supported backup types, retained originals and sibling backups, cancellation, stale review, nested manifest names, and junction rejection.
+- Changed installation location and newly merged registration sources with an unchanged uninstall command are rejected before backup or process launch.
+- Deferred-session resolution preserves original exit codes and requires a strictly later boot counter. Controlled boot inputs exercise restart rules, legacy-record reference capture, cancellation, stale confirmation, running process/lease rejection, reappearing registration, multiple pending records, and redirected storage.
 
 ## Native interface checks
 
 Live checks verified real inventory, themed tables and controls, backup navigation, saved-record leftover review, and the permanent-loss confirmation with No as default. Cancelling that confirmation retained existing user backups. Actual deletion was exercised only on owned fixtures.
 
 The 0.1.0 production executable was opened after final branding changes. Its embedded Windows icon, scaled header icon, About artwork, and version display were inspected in the native interface.
+
+For the review fixes, the native History screen was inspected with the new review/cancel controls. Review was disabled without a selection and enabled for an uninstall-result record. No live session was resolved during that interface check; state-changing regression tests used owned temporary fixtures.
 
 A shared plug-in container stays Blocked even when checked. A name-only application-data folder remains Review rather than being promoted to High. Empty scans distinguish no supported matches from errors or cancellation.
 
@@ -34,5 +38,7 @@ Re-run the complete source checks after branding/storage changes. Verify the ver
 ## Limits
 
 Real elevated operations, alternate-account UAC, delegated installer services, reboot continuation, privileged ownership recovery, full accessibility, cross-monitor DPI changes, and comprehensive disposable-VM uninstall/recovery coverage remain outstanding. Metadata/path checks do not atomically rule out every concurrent writer. The administrator component is unsigned and has not received an independent privileged-security audit.
+
+Restart-resolution tests inject controlled boot counters into internal test seams; they do not reboot the machine or establish actual UAC/reboot end-to-end coverage. Production reads Windows' documented successful-boot counter and fails closed if it is unavailable. Legacy records require a newly captured reference plus a subsequent restart.
 
 Passing source and owned-fixture checks does not establish complete production stability for every supported Windows application.

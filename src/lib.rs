@@ -15,6 +15,7 @@ pub mod recovery;
 pub mod registration;
 pub mod registry_cleanup;
 pub mod scanner;
+pub mod session_review;
 pub mod settings;
 pub mod shell_link;
 pub mod startup;

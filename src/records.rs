@@ -245,6 +245,7 @@ pub fn operation_label(kind: &str) -> String {
     match kind {
         "uninstall-start" => "Uninstall started".into(),
         "uninstall-result" => "Uninstall result".into(),
+        "uninstall-session-review" => "Uninstall session reviewed".into(),
         "uninstall-launch-failed" => "Uninstaller launch failed".into(),
         "quarantine" => "Files quarantined".into(),
         "restore" => "Files restored".into(),

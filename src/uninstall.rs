@@ -164,11 +164,16 @@ pub fn run_mode(
         .iter()
         .find(|a| a.sources.iter().any(|s| app.sources.contains(s)))
         .ok_or("Application registration changed; refresh before uninstall.")?;
+    if current_app != app {
+        return Err(
+            "Application details changed since review; refresh and review before uninstall.".into(),
+        );
+    }
     let current_command = prepare_mode(current_app, mode)?;
     if current_command.executable != cmd.executable || current_command.arguments != cmd.arguments {
         return Err("Uninstall command changed since review; refresh before uninstall.".into());
     }
-    let backup = recovery::backup_registration(app)?;
+    let backup = recovery::backup_registration(current_app)?;
     recovery::history("uninstall-start", &app.name, &cmd.original)?;
     let result = match process::run(&cmd, &app.id, cancel) {
         Ok(result) => result,
@@ -206,6 +211,57 @@ mod tests {
     use super::*;
     const GUID: &str = "{01234567-89AB-CDEF-0123-456789ABCDEF}";
     #[test]
+    fn changed_location_with_unchanged_command_is_rejected_before_backup_or_launch() {
+        use winreg::{RegKey, enums::*};
+        let name = format!("UnboltStaleReviewFixture{}", recovery::unique_id());
+        let key_path = format!("{}\\{name}", inventory::UNINSTALL_ROOT);
+        struct OwnedKey(String);
+        impl Drop for OwnedKey {
+            fn drop(&mut self) {
+                let _ = RegKey::predef(HKEY_CURRENT_USER).delete_subkey_all(&self.0);
+            }
+        }
+        let _owned = OwnedKey(key_path.clone());
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(&key_path)
+            .unwrap();
+        key.set_value("DisplayName", &name).unwrap();
+        key.set_value(
+            "UninstallString",
+            &format!(
+                "{} --list",
+                command::quote_argument(&std::env::current_exe().unwrap().display().to_string())
+            ),
+        )
+        .unwrap();
+        let root =
+            std::env::temp_dir().join(format!("unbolt-stale-review-{}", recovery::unique_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        key.set_value("InstallLocation", &root.join("old").display().to_string())
+            .unwrap();
+        let flag = AtomicBool::new(false);
+        let before = inventory::collect(&flag);
+        assert!(before.errors.is_empty());
+        let app = before.apps.into_iter().find(|a| a.name == name).unwrap();
+        key.set_value("InstallLocation", &root.join("new").display().to_string())
+            .unwrap();
+        let result = crate::context::with_scope(
+            crate::context::CallerScope {
+                data: root.clone(),
+                ..Default::default()
+            },
+            || run_mode(&app, Mode::Normal, &flag),
+        );
+        let no_side_effects =
+            !root.join("registry-backups").exists() && !root.join("process-sessions").exists();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(result.is_err(), "stale review accepted: {result:?}");
+        assert!(
+            no_side_effects,
+            "stale review created backup or launched a process"
+        );
+    }
+    #[test]
     fn failed_installer_is_reported_as_an_error_rather_than_a_tracking_problem() {
         assert!(completion_status(false, Some(1639), false).contains("command line (1639)"));
         assert!(completion_status(false, Some(1603), false).contains("reported an error"));
@@ -213,6 +269,64 @@ mod tests {
         assert!(completion_status(false, Some(0), false).contains("tracking needs review"));
         assert!(completion_status(false, Some(0), true).contains("tracked children finished"));
         assert!(completion_status(true, Some(1639), false).contains("Queue stopped"));
+    }
+    #[test]
+    fn newly_merged_registry_source_is_rejected_before_backup_or_launch() {
+        use winreg::{RegKey, enums::*};
+        let name = format!("UnboltMergedReviewFixture{}", recovery::unique_id());
+        let paths = [
+            format!("{}\\{name}-a", inventory::UNINSTALL_ROOT),
+            format!("{}\\{name}-b", inventory::UNINSTALL_ROOT),
+        ];
+        struct OwnedKeys([String; 2]);
+        impl Drop for OwnedKeys {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = RegKey::predef(HKEY_CURRENT_USER).delete_subkey_all(path);
+                }
+            }
+        }
+        let _owned = OwnedKeys(paths.clone());
+        let command = format!(
+            "{} --list",
+            command::quote_argument(&std::env::current_exe().unwrap().display().to_string())
+        );
+        let populate = |path: &str| {
+            let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+                .create_subkey(path)
+                .unwrap();
+            key.set_value("DisplayName", &name).unwrap();
+            key.set_value("UninstallString", &command).unwrap();
+        };
+        populate(&paths[0]);
+        let flag = AtomicBool::new(false);
+        let before = inventory::collect(&flag);
+        assert!(before.errors.is_empty());
+        let app = before.apps.into_iter().find(|a| a.name == name).unwrap();
+        populate(&paths[1]);
+        let current = inventory::collect(&flag);
+        assert!(current.errors.is_empty());
+        assert!(
+            current
+                .apps
+                .iter()
+                .find(|a| a.name == name)
+                .unwrap()
+                .sources
+                .len()
+                > app.sources.len()
+        );
+        let root =
+            std::env::temp_dir().join(format!("unbolt-merged-review-{}", recovery::unique_id()));
+        let result = crate::context::with_scope(
+            crate::context::CallerScope {
+                data: root.clone(),
+                ..Default::default()
+            },
+            || run_mode(&app, Mode::Normal, &flag),
+        );
+        assert!(result.unwrap_err().contains("Application details changed"));
+        assert!(!root.exists());
     }
     #[test]
     fn rejects_injected_or_ambiguous_msi_product_identifiers() {

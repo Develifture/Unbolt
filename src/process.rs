@@ -94,6 +94,7 @@ pub fn assert_forced_ready(application_id: &str) -> UnboltResult<()> {
         .into_iter()
         .filter(|s| s.application_id == application_id)
         .max_by_key(|s| (crate::records::stamp(&s.id), s.id.clone()))
+        && !session.restart_resolved()
         && (session.error.is_some()
             || matches!(session.exit_code, Some(3010 | 1641))
             || session.exit_code.is_none())
@@ -121,6 +122,29 @@ pub struct Session {
     pub exit_code: Option<i32>,
     pub total_processes: u32,
     pub error: Option<String>,
+    #[serde(default)]
+    pub boot_id: Option<u32>,
+    #[serde(default)]
+    pub restart_review: Option<RestartReview>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RestartReview {
+    pub baseline_boot: u32,
+    pub resolved_boot: Option<u32>,
+}
+impl Session {
+    pub(crate) fn restart_resolved(&self) -> bool {
+        self.state == "resolved-after-restart"
+            && self.error.is_none()
+            && matches!(self.exit_code, Some(0 | 3010 | 1641))
+            && self
+                .restart_review
+                .as_ref()
+                .is_some_and(|r| r.resolved_boot.is_some_and(|boot| boot > r.baseline_boot))
+    }
+    fn terminal(&self) -> bool {
+        self.state == "completed" || self.restart_resolved()
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessResult {
@@ -266,6 +290,8 @@ fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Run
             exit_code: None,
             total_processes: 1,
             error: None,
+            boot_id: crate::session_review::boot_id().ok(),
+            restart_review: None,
         };
         // Keep a durable record before the suspended target executes any code.
         if save(storage, &session).is_err() {
@@ -329,17 +355,18 @@ fn elevated_launch(cmd: &UninstallCommand, id: &str) -> UnboltResult<Running> {
                 exit_code: None,
                 total_processes: 1,
                 error: None,
+                boot_id: crate::session_review::boot_id().ok(),
+                restart_review: None,
             },
         })
     }
 }
-fn save(root: &Path, session: &Session) -> UnboltResult<PathBuf> {
+pub(crate) fn save(root: &Path, session: &Session) -> UnboltResult<PathBuf> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join(format!("{}.json", session.id));
-    let pending = path.with_extension("pending");
+    let pending = root.join(format!("{}.{}.pending", session.id, recovery::unique_id()));
     let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .open(&pending)
         .map_err(|e| e.to_string())?;
@@ -381,7 +408,7 @@ pub fn run_at(
         .into_iter()
         .filter(|s| s.application_id == application_id)
     {
-        if session.state != "completed" {
+        if !session.terminal() {
             return Err(
                 "An earlier installer session requires review before another launch".into(),
             );
@@ -480,7 +507,7 @@ pub fn sessions() -> UnboltResult<Vec<Session>> {
     let root = recovery::data_dir().join("process-sessions");
     sessions_at(&root)
 }
-fn sessions_at(root: &Path) -> UnboltResult<Vec<Session>> {
+pub(crate) fn sessions_at(root: &Path) -> UnboltResult<Vec<Session>> {
     if !root.exists() {
         return Ok(vec![]);
     }
@@ -501,7 +528,7 @@ pub fn assert_idle(application_id: &str) -> UnboltResult<()> {
         .into_iter()
         .filter(|s| s.application_id == application_id)
     {
-        if session.state != "completed" {
+        if !session.terminal() {
             return Err(format!(
                 "Installer session requires review before cleanup: {} ({})",
                 session.state, session.scope
@@ -523,7 +550,7 @@ pub fn assert_cleanup_ready_at(storage: &Path, application_id: &str) -> UnboltRe
         .iter()
         .filter(|s| s.application_id == application_id)
     {
-        if session.state != "completed" {
+        if !session.terminal() {
             return Err(format!(
                 "Cleanup deferred while an installer session needs review: {} ({})",
                 session.state, session.scope
@@ -543,6 +570,7 @@ pub fn assert_cleanup_ready_at(storage: &Path, application_id: &str) -> UnboltRe
                 s.id.clone(),
             )
         })
+        && !session.restart_resolved()
         && (session.error.is_some() || session.exit_code != Some(0))
     {
         return Err(format!(

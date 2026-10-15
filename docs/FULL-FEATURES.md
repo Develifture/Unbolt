@@ -6,7 +6,7 @@ This file distinguishes implemented operations from remaining work.
 | --- | --- | --- |
 | Inventory | Current-user and machine registry views, search/sort/icons/export | Broader package sources |
 | Uninstall | Registered normal/quiet commands, sequential batches, Windows Installer handling | Installer-service attribution and reboot continuation |
-| Process monitoring | Windows jobs, durable sessions, queue cancellation and continued monitoring | Fully validated elevated descendants and restart recovery |
+| Process monitoring | Windows jobs, durable sessions, queue cancellation, continued monitoring, explicit boot-aware review of supported deferred sessions | Fully validated elevated descendants and real reboot recovery coverage |
 | Leftovers | Recorded folders, supported name matches, bounded product registry discovery, evidence | Services, tasks, shortcuts, COM, broader and all-user discovery |
 | Cleanup | Selected supported items, protected/shared/reparse exclusions, quarantine and typed registry backups | Cross-volume storage and wider ownership attribution |
 | Forced removal | Explicit folder/registered-app review, files-in-use checks, app-list entries removed last | Broader resources and VM coverage |

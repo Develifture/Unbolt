@@ -18,7 +18,7 @@ use unbolt::{
     command::wide,
     forced, hunter, inventory,
     model::*,
-    records, recovery, scanner, settings, startup, uninstall,
+    records, recovery, scanner, session_review, settings, startup, uninstall,
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -78,6 +78,7 @@ const STARTUP_RESTORE_ADMIN: usize = 145;
 const STARTUP_SHOW_ALL: usize = 146;
 const DELETE_BACKUP: usize = 147;
 const REVIEW_BACKUP: usize = 148;
+const REVIEW_SESSION: usize = 149;
 // Win32 MAKEINTRESOURCEW(1): an integer resource identifier, never dereferenced.
 const APP_ICON_RESOURCE: *const u16 = std::ptr::without_provenance(1);
 fn removal_caption(id: usize) -> Option<&'static str> {
@@ -178,6 +179,7 @@ enum Event {
     StartupChanged(String),
     BackupDeleteReview(Result<backup_delete::Plan, String>),
     SavedPreview(Result<Box<Application>, String>),
+    SessionReview(Result<Box<session_review::Review>, String>),
 }
 struct State {
     hwnd: HWND,
@@ -470,6 +472,7 @@ impl State {
             (NAV_HISTORY, "Operation history"),
             (OPEN_BACKUP, "Open backup folder"),
             (REVIEW_BACKUP, "Review leftovers"),
+            (REVIEW_SESSION, "Review pending uninstall"),
             (DELETE_BACKUP, "Delete selected"),
             (HUNTER, "Hunter mode ▾"),
             (NAV_STARTUP, "Startup programs"),
@@ -488,6 +491,7 @@ impl State {
                 HISTORY
                     | OPEN_BACKUP
                     | REVIEW_BACKUP
+                    | REVIEW_SESSION
                     | DELETE_BACKUP
                     | STARTUP_DISABLE
                     | STARTUP_RESTORE
@@ -627,6 +631,10 @@ impl State {
             self.place(DELETE_BACKUP, pad + 534, actions, 166, 34);
         }
         self.place(HISTORY, 20, 288, 156, 34);
+        self.place(REVIEW_SESSION, pad, actions, 220, 34);
+        if self.page == Page::History {
+            self.place(CANCEL, pad + 230, actions, 120, 34);
+        }
         self.place(STARTUP_DISABLE, pad, actions, 166, 34);
         self.place(STARTUP_RESTORE, pad + 178, actions, 166, 34);
         self.place(STARTUP_MORE, pad + 356, actions, 180, 34);
@@ -766,9 +774,10 @@ impl State {
             let visible = match *id {
                 PREVIEW | UNINSTALL | FORCED_MSI | CLEANUP | HUNTER => page == Page::Applications,
                 RESTORE => matches!(page, Page::Applications | Page::Backups),
-                CANCEL => matches!(page, Page::Applications | Page::Startup | Page::Backups),
+                CANCEL => true,
                 OPEN_BACKUP | REVIEW_BACKUP | DELETE_BACKUP => page == Page::Backups,
                 HISTORY => false,
+                REVIEW_SESSION => page == Page::History,
                 STARTUP_DISABLE | STARTUP_RESTORE | STARTUP_MORE => page == Page::Startup,
                 _ => true,
             };
@@ -776,7 +785,9 @@ impl State {
             if *id == CANCEL {
                 set_text(
                     *h,
-                    if matches!(page, Page::Startup | Page::Backups) {
+                    if page == Page::History {
+                        "Cancel review"
+                    } else if matches!(page, Page::Startup | Page::Backups) {
                         "Cancel operation"
                     } else {
                         "Cancel queue"
@@ -967,7 +978,7 @@ impl State {
                 );
             }
         }
-        if self.page == Page::Backups {
+        if matches!(self.page, Page::Backups | Page::History) {
             self.update_actions();
         }
     }
@@ -1009,6 +1020,7 @@ impl State {
                         records::detail_text(r)
                     ),
                 );
+                self.update_actions();
             }
             Page::Startup => {
                 set_text(self.details, &self.startup[index].details());
@@ -1016,6 +1028,42 @@ impl State {
             }
             _ => {}
         }
+    }
+    unsafe fn review_session(&mut self) {
+        if self.busy || self.page != Page::History {
+            return;
+        }
+        let Some(record) = selection(self.list)
+            .first()
+            .and_then(|i| self.visible.get(*i))
+            .and_then(|i| self.history.get(*i))
+            .filter(|r| r.kind == "uninstall-result")
+        else {
+            return;
+        };
+        let outcome = match serde_json::from_str::<uninstall::UninstallOutcome>(&record.detail) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                set_text(
+                    self.details,
+                    &format!("Cannot read the uninstall result: {error}"),
+                );
+                return;
+            }
+        };
+        self.busy(true);
+        set_text(
+            self.status,
+            "Checking the saved registration, installer state, and Windows restart…",
+        );
+        let tx = self.sender.clone();
+        let cancel = self.cancel.clone();
+        thread::spawn(move || {
+            let manifest = std::path::PathBuf::from(outcome.backup).join("application.json");
+            let result =
+                session_review::prepare(&manifest, &outcome.process_session, &cancel).map(Box::new);
+            let _ = tx.send(Event::SessionReview(result));
+        });
     }
     unsafe fn open_backup_folder(&self) {
         let path = selection(self.list)
@@ -1219,6 +1267,20 @@ impl State {
     }
     unsafe fn update_actions(&self) {
         if self.busy {
+            return;
+        }
+        if self.page == Page::History {
+            let enabled = selection(self.list).len() == 1
+                && selection(self.list)
+                    .first()
+                    .and_then(|i| self.visible.get(*i))
+                    .and_then(|i| self.history.get(*i))
+                    .is_some_and(|r| r.kind == "uninstall-result");
+            for (id, h) in &self.controls {
+                if *id == REVIEW_SESSION {
+                    EnableWindow(*h, enabled as i32);
+                }
+            }
             return;
         }
         if self.page == Page::Backups {
@@ -2411,9 +2473,6 @@ impl State {
                     break;
                 }
                 let _ = tx.send(Event::Progress(format!("Uninstalling {}…", app.name)));
-                // Always retain the attempted app for read-only review. The scanner
-                // blocks cleanup if its registration/session is still unresolved.
-                done.push(app.clone());
                 let result = match operation {
                     Some(operation) => {
                         client::invoke(operation, &cancel).and_then(|reply| match reply {
@@ -2427,12 +2486,17 @@ impl State {
                 };
                 match result {
                     Ok(out) => {
+                        // Only a revalidated attempt may seed a leftover preview.
+                        done.push(app.clone());
                         summary.push(format!("{}: {}", app.name, out.status));
                         if !out.safe_to_scan {
                             break;
                         }
                     }
-                    Err(e) => summary.push(format!("{}: {e}", app.name)),
+                    Err(e) => {
+                        summary.push(format!("{}: {e}", app.name));
+                        break;
+                    }
                 }
             }
             let _ = tx.send(Event::Uninstalled(done, summary.join("\r\n")));
@@ -2642,7 +2706,7 @@ impl State {
                             set_text(
                                 self.details,
                                 &if page.errors.is_empty() {
-                                    "Select an operation to inspect the complete result.".into()
+                                    self.record_result.take().unwrap_or_else(|| "Select an operation to inspect the complete result. Select an uninstall result to review a pending session after restarting Windows.".into())
                                 } else {
                                     page.errors.join("\r\n")
                                 },
@@ -2714,6 +2778,35 @@ impl State {
                         Ok(app) => {
                             self.pending_preview = Some(*app);
                             self.show_page(Page::Applications);
+                        }
+                        Err(error) => set_text(self.details, &error),
+                    }
+                }
+                Event::SessionReview(result) => {
+                    self.busy(false);
+                    match result {
+                        Ok(plan) => {
+                            if message(
+                                self.hwnd,
+                                &plan.description(),
+                                "Review pending uninstall",
+                                MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION,
+                            ) == IDYES
+                            {
+                                self.busy(true);
+                                self.refresh_after_result = true;
+                                let tx = self.sender.clone();
+                                let cancel = self.cancel.clone();
+                                thread::spawn(move || {
+                                    let result = plan.execute(&cancel).unwrap_or_else(|e| e);
+                                    let _ = tx.send(Event::Finished(result));
+                                });
+                            } else {
+                                set_text(
+                                    self.status,
+                                    "Uninstall review cancelled. The session was not changed.",
+                                );
+                            }
                         }
                         Err(error) => set_text(self.details, &error),
                     }
@@ -3086,6 +3179,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 OPEN_BACKUP => (*raw).open_backup_folder(),
                 DELETE_BACKUP => (*raw).delete_backups(),
                 REVIEW_BACKUP => (*raw).review_backup(),
+                REVIEW_SESSION => (*raw).review_session(),
                 PREVIEW => {
                     let apps = (*raw).selected_apps();
                     if let Some(a) = apps.first() {
