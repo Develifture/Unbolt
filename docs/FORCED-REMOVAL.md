@@ -1,0 +1,11 @@
+# Forced removal workflow
+
+Unbolt supports general forced removal as well as Windows Installer removal. The desktop's More removal menu offers review for the selected registered app, an exact unregistered folder entered with its product name, and Windows Installer removal.
+
+A forced review does not launch the vendor uninstaller. It shows the exact directory, product settings with explicit installation-path evidence, and the exact Windows application-list registration entries. Selection remains per item. Windows Restart Manager checks files in use; a running target or an unavailable file-use check blocks removal. Protected roots, Windows/WindowsApps, Unbolt's executable storage, shared installation paths, reparse points, and registry symbolic links remain excluded.
+
+Before changing anything, execution rechecks application identity, inventory coverage, selected file snapshots/tree signatures, selected product-key snapshots, and current file use. Registration entries get typed recovery snapshots first. Selected files move to quarantine; selected product keys get backups before removal. Selected application-list entries are processed last and remain in place if selected cleanup fails or the queue is cancelled. Selecting only an app-list entry hides that exact registration without removing unselected files, and the confirmation explains this consequence.
+
+Each operation writes a durable journal and per-item results. A failed operation is marked Needs review, rather than asserting that no change happened. Registration backups remain linked even when their removal fails. The backup browser recognizes app-list-entry captures separately and restores them through a bounded registration validator; existing destinations are never overwritten.
+
+Controlled tests cover registered-app removal and all three restorations, destination conflicts, stale review rejection, unselected file preservation, invalid selection/cancellation, failed cleanup retaining registration, and running-process blocking. These fixtures own their temporary folders and unique HKCU keys. Disposable Windows VM tests with real installers, elevated operations, broader ownership/scan coverage, cross-volume quarantine, and full access-control restoration remain pending.

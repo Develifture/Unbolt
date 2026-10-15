@@ -1,0 +1,23 @@
+pub mod activity;
+pub mod backup_delete;
+pub mod broker;
+pub mod command;
+pub mod context;
+pub mod crypto;
+pub mod forced;
+pub mod hunter;
+pub mod inventory;
+pub mod model;
+pub(crate) mod platform_paths;
+pub mod process;
+pub mod records;
+pub mod recovery;
+pub mod registration;
+pub mod registry_cleanup;
+pub mod scanner;
+pub mod settings;
+pub mod shell_link;
+pub mod startup;
+pub mod uninstall;
+
+pub type UnboltResult<T> = Result<T, String>;
