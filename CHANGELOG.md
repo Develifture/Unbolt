@@ -10,6 +10,7 @@
 - Include this changelog in portable packages.
 - Discover pending uninstall entries from durable session/export records even when operation history is missing, unreadable, or expired. Record the exact export for new sessions and reject ambiguous older export matches.
 - Continue pending-session discovery past individual corrupt/unreadable records, while reporting them and retaining cleanup protections. Preserve completed uninstall results and preview eligibility when the final history write fails.
+- Isolate legacy registration-export discovery from failures in unrelated backup stores.
 
 ## 0.1.0
 

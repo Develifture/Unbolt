@@ -79,7 +79,7 @@ fn eligible(session: &Session) -> UnboltResult<()> {
 // They remain visible even if the append-only history is absent or unreadable.
 pub(crate) fn pending_records()
 -> UnboltResult<crate::records::RecordPage<crate::records::HistoryRecord>> {
-    use crate::records::{self, HistoryRecord, RecordPage};
+    use crate::records::{HistoryRecord, RecordPage};
     let mut page = RecordPage {
         records: vec![],
         errors: vec![],
@@ -116,29 +116,34 @@ pub(crate) fn pending_records()
         }
     }
     let mut exports = Vec::new();
-    let backups = if sessions.iter().any(|s| s.registration_export.is_none()) {
-        records::backups().unwrap_or_else(|error| RecordPage {
-            records: vec![],
-            errors: vec![format!("Cannot discover legacy session exports: {error}")],
-        })
-    } else {
-        RecordPage {
-            records: vec![],
-            errors: vec![],
-        }
-    };
-    page.errors.extend(backups.errors);
-    for record in backups
-        .records
-        .into_iter()
-        .filter(|r| r.kind == "Registration export")
-    {
-        match backup_delete::saved_application(&record.manifest) {
-            Ok(app) => exports.push((record.manifest, app)),
-            Err(error) => page.errors.push(format!(
-                "Cannot inspect recovery export {}: {error}",
-                record.id
-            )),
+    if sessions.iter().any(|s| s.registration_export.is_none()) {
+        // Recovery does not depend on enumeration of unrelated backup stores.
+        let store = recovery::data_dir().join("registry-backups");
+        let discovered = (|| -> UnboltResult<()> {
+            for ancestor in store.ancestors() {
+                scanner::snapshot(ancestor)?;
+            }
+            for entry in fs::read_dir(&store).map_err(|e| e.to_string())? {
+                let result = (|| -> UnboltResult<_> {
+                    let manifest = entry
+                        .map_err(|e| e.to_string())?
+                        .path()
+                        .join("application.json");
+                    let app = backup_delete::saved_application(&manifest)?;
+                    Ok((manifest, app))
+                })();
+                match result {
+                    Ok(export) => exports.push(export),
+                    Err(error) => page
+                        .errors
+                        .push(format!("Cannot inspect recovery export: {error}")),
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = discovered {
+            page.errors
+                .push(format!("Cannot discover legacy session exports: {error}"));
         }
     }
     for session in sessions {
@@ -802,6 +807,30 @@ mod tests {
             assert!(read_session(&session.id).unwrap().0.restart_resolved());
             // Discovery tolerates bad records; destructive cleanup still fails closed.
             assert!(process::assert_cleanup_ready(&session.application_id).is_err());
+        });
+    }
+    #[test]
+    fn legacy_export_discovery_does_not_depend_on_unrelated_backup_stores() {
+        fixture("completed", 3010, Some(100), |manifest, session| {
+            assert!(session.registration_export.is_none());
+            fs::write(
+                recovery::data_dir().join("quarantine"),
+                b"unrelated invalid store",
+            )
+            .unwrap();
+            let page = crate::records::history().unwrap();
+            let record = page
+                .records
+                .iter()
+                .find(|r| r.kind == "uninstall-session-pending" && r.id == session.id)
+                .expect("valid legacy export must remain discoverable");
+            let (target, id) = record.session_review_target().unwrap();
+            assert_eq!(target, manifest);
+            prepare_at_boot(&target, &id, &AtomicBool::new(false), 101)
+                .unwrap()
+                .execute_at_boot(&AtomicBool::new(false), 101)
+                .unwrap();
+            assert!(read_session(&session.id).unwrap().0.restart_resolved());
         });
     }
     #[test]

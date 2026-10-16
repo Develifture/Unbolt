@@ -2,7 +2,7 @@
 
 ## Source checks
 
-The published 0.1.0 baseline has 71 passing checks. The review fixes add 17 regression checks, bringing the current source suite to 88: 73 library checks, one GUI icon check, one files-in-use fixture, five helper fixtures, one Hunter fixture, and seven process-lifecycle fixtures. Run the current source checks again when changing runtime behavior.
+The published 0.1.0 baseline has 71 passing checks. The review fixes add 18 regression checks, bringing the current source suite to 89: 74 library checks, one GUI icon check, one files-in-use fixture, five helper fixtures, one Hunter fixture, and seven process-lifecycle fixtures. Run the current source checks again when changing runtime behavior.
 
 Both production and test-fixtures Clippy configurations are checked with warnings denied. Fixture launchers are feature gated and excluded from portable packages.
 
@@ -23,6 +23,7 @@ Both production and test-fixtures Clippy configurations are checked with warning
 - Pending-session exports cannot be deleted before resolution, including a new pending session or active operation appearing after deletion review. Export deletion becomes available after resolution. Replacement registrations with new source IDs invalidate both pending and confirmed reviews, including absent installation folders.
 - Durable pending-session discovery remains usable with missing, unreadable, and expired history records. The same review target used by the GUI resolves the owned session in each case. New launches persist their exact export path; older sessions with conflicting export snapshots remain blocked rather than choosing one arbitrarily.
 - Discovery reports individual malformed, locked, and directory-replaced session records while retaining valid pending entries. Destructive cleanup continues to fail closed on unreadable session data. A real owned process completion retains its preview eligibility and original session/exit result when final audit logging fails, with the logging error surfaced in its status.
+- Legacy export discovery reads registration exports directly and remains usable when an unrelated backup store cannot be enumerated.
 
 ## Native interface checks
 
