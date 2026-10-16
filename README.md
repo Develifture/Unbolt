@@ -64,9 +64,9 @@ No. Previewing leftovers is read-only. After an uninstall, Unbolt opens a leftov
 
 A checked box does not establish ownership. Ordinary cleanup accepts supported High-confidence items only. Shared folders, protected locations, and reparse points stay Blocked; name-only matches need further review. Unresolved registration, process monitoring, or reboot status can also prevent cleanup.
 
-For a completed uninstall awaiting restart or process review, restart Windows, open **Operation history**, select its **Uninstall result**, and choose **Review pending uninstall**. Unbolt checks the saved registration, recorded processes, and supported folder usage again before offering to resolve that session. Then use **Backups & recovery → Review leftovers** for a fresh scan. Other pending or failed sessions still block cleanup.
+For a completed uninstall awaiting restart or process review, restart Windows, open **Operation history**, select **Pending uninstall** or its **Uninstall result**, and choose **Review pending uninstall**. Pending entries are discovered from saved session/export records even if the history entry is missing or expired. Unbolt checks the saved registration, recorded processes, and supported folder usage again before offering to resolve that session. Then use **Backups & recovery → Review leftovers** for a fresh scan. Other pending or failed sessions still block cleanup.
 
-Older session records lack a boot reference. Their first confirmed review records the current boot; restart Windows and review again. The saved registration export must still exist. If Windows boot information or process/application state cannot be verified, the session remains blocked. This action does not remove application data.
+Older session records lack a boot reference. Their first confirmed review records the current boot; restart Windows and review again. The saved registration export must still exist. New sessions record the exact export; older sessions with conflicting export snapshots require further recovery review. If Windows boot information or process/application state cannot be verified, the session remains blocked. This action does not remove application data.
 
 ### Can I delete the recovery backups?
 

@@ -1037,12 +1037,12 @@ impl State {
             .first()
             .and_then(|i| self.visible.get(*i))
             .and_then(|i| self.history.get(*i))
-            .filter(|r| r.kind == "uninstall-result")
+            .filter(|r| r.can_review_session())
         else {
             return;
         };
-        let outcome = match serde_json::from_str::<uninstall::UninstallOutcome>(&record.detail) {
-            Ok(outcome) => outcome,
+        let (manifest, session_id) = match record.session_review_target() {
+            Ok(target) => target,
             Err(error) => {
                 set_text(
                     self.details,
@@ -1059,9 +1059,7 @@ impl State {
         let tx = self.sender.clone();
         let cancel = self.cancel.clone();
         thread::spawn(move || {
-            let manifest = std::path::PathBuf::from(outcome.backup).join("application.json");
-            let result =
-                session_review::prepare(&manifest, &outcome.process_session, &cancel).map(Box::new);
+            let result = session_review::prepare(&manifest, &session_id, &cancel).map(Box::new);
             let _ = tx.send(Event::SessionReview(result));
         });
     }
@@ -1275,7 +1273,7 @@ impl State {
                     .first()
                     .and_then(|i| self.visible.get(*i))
                     .and_then(|i| self.history.get(*i))
-                    .is_some_and(|r| r.kind == "uninstall-result");
+                    .is_some_and(|r| r.can_review_session());
             for (id, h) in &self.controls {
                 if *id == REVIEW_SESSION {
                     EnableWindow(*h, enabled as i32);
@@ -2706,7 +2704,7 @@ impl State {
                             set_text(
                                 self.details,
                                 &if page.errors.is_empty() {
-                                    self.record_result.take().unwrap_or_else(|| "Select an operation to inspect the complete result. Select an uninstall result to review a pending session after restarting Windows.".into())
+                                    self.record_result.take().unwrap_or_else(|| "Select an operation to inspect the complete result. Select Pending uninstall or Uninstall result to review after restarting Windows. Pending entries are discovered from saved sessions even when their history entry is missing.".into())
                                 } else {
                                     page.errors.join("\r\n")
                                 },

@@ -126,6 +126,8 @@ pub struct Session {
     pub boot_id: Option<u32>,
     #[serde(default)]
     pub restart_review: Option<RestartReview>,
+    #[serde(default)]
+    pub registration_export: Option<PathBuf>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RestartReview {
@@ -234,7 +236,12 @@ impl Running {
     }
 }
 
-fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Running, u32> {
+fn native_launch(
+    cmd: &UninstallCommand,
+    id: &str,
+    storage: &Path,
+    export: Option<&Path>,
+) -> Result<Running, u32> {
     unsafe {
         let name = format!("Local\\UnboltInstaller-{}", recovery::unique_id());
         let job = CreateJobObjectW(null(), command::wide(&name).as_ptr());
@@ -296,6 +303,7 @@ fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Run
             error: None,
             boot_id: crate::session_review::boot_id().ok(),
             restart_review: None,
+            registration_export: export.map(Path::to_path_buf),
         };
         // Keep a durable record before the suspended target executes any code.
         if save(storage, &session).is_err() {
@@ -317,7 +325,11 @@ fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Run
         })
     }
 }
-fn elevated_launch(cmd: &UninstallCommand, id: &str) -> UnboltResult<Running> {
+fn elevated_launch(
+    cmd: &UninstallCommand,
+    id: &str,
+    export: Option<&Path>,
+) -> UnboltResult<Running> {
     unsafe {
         let executable = command::wide(&cmd.executable);
         let verb = command::wide("runas");
@@ -361,6 +373,7 @@ fn elevated_launch(cmd: &UninstallCommand, id: &str) -> UnboltResult<Running> {
                 error: None,
                 boot_id: crate::session_review::boot_id().ok(),
                 restart_review: None,
+                registration_export: export.map(Path::to_path_buf),
             },
         })
     }
@@ -403,7 +416,7 @@ pub fn run_at(
         return Err("Cancelled before launch".into());
     }
     let lease = reserve_application(storage, application_id)?;
-    run_reserved(cmd, application_id, cancel, storage, lease)
+    run_reserved(cmd, application_id, cancel, storage, lease, None)
 }
 pub(crate) fn run_reserved(
     cmd: &UninstallCommand,
@@ -411,6 +424,7 @@ pub(crate) fn run_reserved(
     cancel: &AtomicBool,
     storage: &Path,
     lease: ApplicationLease,
+    export: Option<&Path>,
 ) -> UnboltResult<ProcessResult> {
     if cancelled(cancel) {
         return Err("Cancelled before launch".into());
@@ -434,9 +448,9 @@ pub(crate) fn run_reserved(
         return Err("Cancelled before launch".into());
     }
     let started = Instant::now();
-    let mut running = match native_launch(cmd, application_id, storage) {
+    let mut running = match native_launch(cmd, application_id, storage, export) {
         Ok(r) => r,
-        Err(740) => elevated_launch(cmd, application_id)?,
+        Err(740) => elevated_launch(cmd, application_id, export)?,
         Err(e) => {
             return Err(format!(
                 "Target did not start; tracked launch failed (Windows error {e})"

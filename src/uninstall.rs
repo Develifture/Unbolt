@@ -180,7 +180,14 @@ pub fn run_mode(
     process::assert_idle(&app.id)?;
     let backup = recovery::backup_registration(current_app)?;
     recovery::history("uninstall-start", &app.name, &cmd.original)?;
-    let result = match process::run_reserved(&cmd, &app.id, cancel, &storage, lease) {
+    let result = match process::run_reserved(
+        &cmd,
+        &app.id,
+        cancel,
+        &storage,
+        lease,
+        Some(&backup.join("application.json")),
+    ) {
         Ok(result) => result,
         Err(e) => {
             let _ = recovery::history("uninstall-launch-failed", &app.name, &e);

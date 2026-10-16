@@ -75,6 +75,90 @@ fn eligible(session: &Session) -> UnboltResult<()> {
     Ok(())
 }
 
+// These are current recovery entries, not reconstructed historical outcomes.
+// They remain visible even if the append-only history is absent or unreadable.
+pub(crate) fn pending_records()
+-> UnboltResult<crate::records::RecordPage<crate::records::HistoryRecord>> {
+    use crate::records::{self, HistoryRecord, RecordPage};
+    let mut page = RecordPage {
+        records: vec![],
+        errors: vec![],
+    };
+    let sessions = process::sessions()?
+        .into_iter()
+        .filter(|s| eligible(s).is_ok())
+        .collect::<Vec<_>>();
+    let mut exports = Vec::new();
+    let backups = if sessions.iter().any(|s| s.registration_export.is_none()) {
+        records::backups().unwrap_or_else(|error| RecordPage {
+            records: vec![],
+            errors: vec![format!("Cannot discover legacy session exports: {error}")],
+        })
+    } else {
+        RecordPage {
+            records: vec![],
+            errors: vec![],
+        }
+    };
+    page.errors.extend(backups.errors);
+    for record in backups
+        .records
+        .into_iter()
+        .filter(|r| r.kind == "Registration export")
+    {
+        match backup_delete::saved_application(&record.manifest) {
+            Ok(app) => exports.push((record.manifest, app)),
+            Err(error) => page.errors.push(format!(
+                "Cannot inspect recovery export {}: {error}",
+                record.id
+            )),
+        }
+    }
+    for session in sessions {
+        let result = (|| -> UnboltResult<HistoryRecord> {
+            let (checked, _) = read_session(&session.id)?;
+            eligible(&checked)?;
+            let (manifest, app) = if let Some(manifest) = &checked.registration_export {
+                (
+                    manifest.clone(),
+                    backup_delete::saved_application(manifest)?,
+                )
+            } else {
+                let matches = exports
+                    .iter()
+                    .filter(|(_, a)| a.id == checked.application_id)
+                    .collect::<Vec<_>>();
+                let first = matches
+                    .first()
+                    .ok_or("Saved registration export is missing")?;
+                if matches.iter().any(|(_, app)| app != &first.1) {
+                    return Err("Multiple different exports match this older session; retain them for recovery review".into());
+                }
+                (first.0.clone(), first.1.clone())
+            };
+            if app.id != checked.application_id {
+                return Err("Saved export belongs to a different application".into());
+            }
+            Ok(HistoryRecord {
+                id: checked.id.clone(), kind: "uninstall-session-pending".into(), application: app.name,
+                detail: serde_json::json!({
+                    "status": "Pending uninstall discovered from saved session records. Review after restarting Windows. This entry does not depend on operation history.",
+                    "exit_code": checked.exit_code, "tracking_scope": checked.scope,
+                    "tracked_processes": checked.total_processes,
+                    "process_session": checked.id, "backup": manifest.parent().ok_or("Export has no directory")?,
+                }).to_string(),
+            })
+        })();
+        match result {
+            Ok(record) => page.records.push(record),
+            Err(error) => page
+                .errors
+                .push(format!("Pending session {}: {error}", session.id)),
+        }
+    }
+    Ok(page)
+}
+
 fn check_processes(session: &Session) -> UnboltResult<()> {
     unsafe {
         if session.root.pid == 0 || session.root.created == 0 {
@@ -192,6 +276,12 @@ fn prepare_at_boot(
     let (session, bytes) = read_session(session_id)?;
     if session.application_id != app.id {
         return Err("The session does not belong to this saved application".into());
+    }
+    if let Some(expected) = &session.registration_export
+        && fs::canonicalize(expected).map_err(|e| e.to_string())?
+            != fs::canonicalize(manifest).map_err(|e| e.to_string())?
+    {
+        return Err("Choose the registration export recorded by this installer session".into());
     }
     eligible(&session)?;
     let baseline = session
@@ -388,6 +478,7 @@ mod tests {
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             old.as_object_mut().unwrap().remove("boot_id");
             old.as_object_mut().unwrap().remove("restart_review");
+            old.as_object_mut().unwrap().remove("registration_export");
             fs::write(path, serde_json::to_vec(&old).unwrap()).unwrap();
             let flag = AtomicBool::new(false);
             check(manifest, session, 100)
@@ -608,6 +699,120 @@ mod tests {
                 assert!(!manifest.exists());
             });
         }
+    }
+    #[test]
+    fn pending_sessions_are_discoverable_without_readable_or_retained_history() {
+        for history_state in ["missing", "unreadable", "aged-out"] {
+            fixture("completed", 3010, Some(100), |manifest, session| {
+                let history = recovery::data_dir().join("history.jsonl");
+                match history_state {
+                    "unreadable" => fs::create_dir(&history).unwrap(),
+                    "aged-out" => {
+                        use std::io::Write;
+                        let mut file = fs::File::create(&history).unwrap();
+                        for index in 0..10_001 {
+                            writeln!(file, "{{\"id\":\"{index}-1-0\",\"kind\":\"other\",\"application\":\"Fixture\",\"detail\":\"Other event\"}}").unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+                let page = crate::records::history().unwrap();
+                let record = page
+                    .records
+                    .iter()
+                    .find(|r| r.kind == "uninstall-session-pending" && r.id == session.id)
+                    .expect("pending session must remain visible");
+                assert!(record.can_review_session());
+                let (target, session_id) = record.session_review_target().unwrap();
+                assert_eq!(target, manifest);
+                assert_eq!(session_id, session.id);
+                prepare_at_boot(&target, &session_id, &AtomicBool::new(false), 101)
+                    .unwrap()
+                    .execute_at_boot(&AtomicBool::new(false), 101)
+                    .unwrap();
+                assert!(read_session(&session.id).unwrap().0.restart_resolved());
+                assert!(
+                    !crate::records::history()
+                        .unwrap()
+                        .records
+                        .iter()
+                        .any(|r| r.kind == "uninstall-session-pending" && r.id == session.id)
+                );
+            });
+        }
+    }
+    #[test]
+    fn recorded_export_is_persisted_and_selected_without_guessing_between_backups() {
+        fixture("completed", 3010, Some(100), |manifest, session| {
+            let app = backup_delete::saved_application(manifest).unwrap();
+            let other = manifest
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(recovery::unique_id())
+                .join("application.json");
+            fs::create_dir_all(other.parent().unwrap()).unwrap();
+            let mut changed = app.clone();
+            changed.location = None;
+            fs::write(&other, serde_json::to_vec(&changed).unwrap()).unwrap();
+            let page = crate::records::history().unwrap();
+            assert!(
+                !page
+                    .records
+                    .iter()
+                    .any(|r| r.kind == "uninstall-session-pending")
+            );
+            assert!(
+                page.errors
+                    .iter()
+                    .any(|e| e.contains("Multiple different exports"))
+            );
+            // A new tracked launch durably records its exact export.
+            let cmd = command::parse(&format!(
+                "{} --list",
+                command::quote_argument(&std::env::current_exe().unwrap().display().to_string())
+            ))
+            .unwrap();
+            let storage = recovery::data_dir().join("process-sessions");
+            let lease =
+                process::reserve_application(&storage, "owned-export-binding-fixture").unwrap();
+            let launched = process::run_reserved(
+                &cmd,
+                "owned-export-binding-fixture",
+                &AtomicBool::new(false),
+                &storage,
+                lease,
+                Some(manifest),
+            )
+            .unwrap()
+            .session;
+            assert_eq!(
+                read_session(&launched.id)
+                    .unwrap()
+                    .0
+                    .registration_export
+                    .as_deref(),
+                Some(manifest)
+            );
+            let mut bound = session.clone();
+            bound.registration_export = Some(manifest.into());
+            process::save(&storage, &bound).unwrap();
+            let page = crate::records::history().unwrap();
+            let row = page
+                .records
+                .iter()
+                .find(|r| r.kind == "uninstall-session-pending")
+                .unwrap();
+            let (target, _) = row.session_review_target().unwrap();
+            assert_eq!(target, manifest);
+            assert!(check(&other, &bound, 101).is_err());
+            check(&target, &bound, 101)
+                .unwrap()
+                .execute_at_boot(&AtomicBool::new(false), 101)
+                .unwrap();
+            assert!(read_session(&bound.id).unwrap().0.restart_resolved());
+        });
     }
     #[test]
     fn resolving_one_record_does_not_clear_other_pending_sessions() {

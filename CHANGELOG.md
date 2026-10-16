@@ -8,6 +8,7 @@
 - Retain registration exports while an installer is active or a deferred session needs them. Recheck before deletion and hold the application reservation from export creation through installer monitoring.
 - Detect replacement registrations by product metadata even when their registry source changes and the old installation folder is absent.
 - Include this changelog in portable packages.
+- Discover pending uninstall entries from durable session/export records even when operation history is missing, unreadable, or expired. Record the exact export for new sessions and reject ambiguous older export matches.
 
 ## 0.1.0
 
