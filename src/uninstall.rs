@@ -210,18 +210,87 @@ pub fn run_mode(
         tracked_processes: result.session.total_processes,
         safe_to_scan: result.safe_to_scan && result.session.exit_code == Some(0),
     };
-    recovery::history(
-        "uninstall-result",
-        &app.name,
-        &serde_json::to_string(&outcome).map_err(|e| e.to_string())?,
-    )?;
-    Ok(outcome)
+    Ok(record_outcome(outcome))
+}
+
+fn record_outcome(mut outcome: UninstallOutcome) -> UninstallOutcome {
+    let recorded = serde_json::to_string(&outcome)
+        .map_err(|e| e.to_string())
+        .and_then(|detail| recovery::history("uninstall-result", &outcome.application, &detail));
+    if let Err(error) = recorded {
+        // The installer already ran. Preserve its result and preview eligibility
+        // while reporting the audit failure separately from a launch rejection.
+        outcome
+            .status
+            .push_str(&format!(" Operation history could not be written: {error}"));
+    }
+    outcome
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     const GUID: &str = "{01234567-89AB-CDEF-0123-456789ABCDEF}";
+    #[test]
+    fn completed_process_keeps_preview_eligibility_when_final_history_write_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "unbolt-outcome-log-fixture-{}",
+            recovery::unique_id()
+        ));
+        fs::create_dir_all(root.join("history.jsonl")).unwrap();
+        let result = crate::context::with_scope(
+            crate::context::CallerScope {
+                data: root.clone(),
+                ..Default::default()
+            },
+            || {
+                let cmd = command::parse(&format!(
+                    "{} --list",
+                    command::quote_argument(
+                        &std::env::current_exe().unwrap().display().to_string()
+                    )
+                ))
+                .unwrap();
+                let result =
+                    process::run(&cmd, "owned-log-failure-fixture", &AtomicBool::new(false))
+                        .unwrap();
+                assert_eq!(result.session.exit_code, Some(0));
+                assert!(result.safe_to_scan);
+                let id = result.session.id.clone();
+                let outcome = record_outcome(UninstallOutcome {
+                    application: "Owned logging fixture".into(),
+                    status: completion_status(false, result.session.exit_code, result.safe_to_scan)
+                        .into(),
+                    exit_code: result.session.exit_code,
+                    backup: root.join("owned-export").display().to_string(),
+                    elapsed_ms: result.elapsed_ms,
+                    process_session: id.clone(),
+                    tracking_scope: result.session.scope,
+                    tracked_processes: result.session.total_processes,
+                    safe_to_scan: result.safe_to_scan,
+                });
+                assert!(outcome.safe_to_scan);
+                assert_eq!(outcome.process_session, id);
+                assert_eq!(outcome.exit_code, Some(0));
+                assert!(outcome.status.contains("tracked children finished"));
+                assert!(
+                    outcome
+                        .status
+                        .contains("Operation history could not be written")
+                );
+                assert!(
+                    process::sessions()
+                        .unwrap()
+                        .iter()
+                        .any(|s| s.id == id && s.state == "completed")
+                );
+                outcome
+            },
+        );
+        assert!(result.safe_to_scan);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn changed_location_with_unchanged_command_is_rejected_before_backup_or_launch() {
         use winreg::{RegKey, enums::*};

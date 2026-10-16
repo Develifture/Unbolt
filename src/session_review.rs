@@ -84,10 +84,37 @@ pub(crate) fn pending_records()
         records: vec![],
         errors: vec![],
     };
-    let sessions = process::sessions()?
-        .into_iter()
-        .filter(|s| eligible(s).is_ok())
-        .collect::<Vec<_>>();
+    let store = recovery::data_dir().join("process-sessions");
+    match fs::symlink_metadata(&store) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(page),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    for ancestor in store.ancestors() {
+        scanner::snapshot(ancestor)?;
+    }
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(&store).map_err(|e| e.to_string())? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                page.errors.push(error.to_string());
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        match read_session(id) {
+            Ok((session, _)) if eligible(&session).is_ok() => sessions.push(session),
+            Ok(_) => {}
+            Err(error) => page
+                .errors
+                .push(format!("Cannot inspect session {id}: {error}")),
+        }
+    }
     let mut exports = Vec::new();
     let backups = if sessions.iter().any(|s| s.registration_export.is_none()) {
         records::backups().unwrap_or_else(|error| RecordPage {
@@ -740,6 +767,42 @@ mod tests {
                 );
             });
         }
+    }
+    #[test]
+    fn discovery_retains_valid_sessions_beside_corrupt_directory_and_locked_records() {
+        fixture("completed", 3010, Some(100), |manifest, session| {
+            use std::os::windows::fs::OpenOptionsExt;
+            let storage = recovery::data_dir().join("process-sessions");
+            fs::write(
+                storage.join(format!("{}.json", recovery::unique_id())),
+                b"not json",
+            )
+            .unwrap();
+            fs::create_dir(storage.join(format!("{}.json", recovery::unique_id()))).unwrap();
+            let locked_path = storage.join(format!("{}.json", recovery::unique_id()));
+            fs::write(&locked_path, b"{}").unwrap();
+            let _locked = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&locked_path)
+                .unwrap();
+            let page = crate::records::history().unwrap();
+            assert!(page.errors.len() >= 3);
+            let row = page
+                .records
+                .iter()
+                .find(|r| r.kind == "uninstall-session-pending" && r.id == session.id)
+                .expect("an unrelated bad record must not hide this session");
+            let (target, id) = row.session_review_target().unwrap();
+            assert_eq!(target, manifest);
+            prepare_at_boot(&target, &id, &AtomicBool::new(false), 101)
+                .unwrap()
+                .execute_at_boot(&AtomicBool::new(false), 101)
+                .unwrap();
+            assert!(read_session(&session.id).unwrap().0.restart_resolved());
+            // Discovery tolerates bad records; destructive cleanup still fails closed.
+            assert!(process::assert_cleanup_ready(&session.application_id).is_err());
+        });
     }
     #[test]
     fn recorded_export_is_persisted_and_selected_without_guessing_between_backups() {
