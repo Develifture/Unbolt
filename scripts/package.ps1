@@ -16,7 +16,7 @@ try {
     foreach ($pair in @(@('unbolt.exe', 'Unbolt.exe'), @('unbolt-cli.exe', 'UnboltCLI.exe'), @('unbolt-helper.exe', 'UnboltHelper.exe'))) {
         Copy-Item -LiteralPath (Join-Path $repoPath ('target\release\' + $pair[0])) -Destination (Join-Path $packagePath $pair[1])
     }
-    foreach ($file in @('README.md', 'LICENSE')) {
+    foreach ($file in @('README.md', 'LICENSE', 'CHANGELOG.md')) {
         Copy-Item -LiteralPath (Join-Path $repoPath $file) -Destination $packagePath
     }
     Copy-Item -LiteralPath (Join-Path $repoPath 'assets') -Destination (Join-Path $packagePath 'assets') -Recurse

@@ -94,6 +94,7 @@ pub fn assert_forced_ready(application_id: &str) -> UnboltResult<()> {
         .into_iter()
         .filter(|s| s.application_id == application_id)
         .max_by_key(|s| (crate::records::stamp(&s.id), s.id.clone()))
+        && !session.restart_resolved()
         && (session.error.is_some()
             || matches!(session.exit_code, Some(3010 | 1641))
             || session.exit_code.is_none())
@@ -121,6 +122,35 @@ pub struct Session {
     pub exit_code: Option<i32>,
     pub total_processes: u32,
     pub error: Option<String>,
+    #[serde(default)]
+    pub boot_id: Option<u32>,
+    #[serde(default)]
+    pub restart_review: Option<RestartReview>,
+    #[serde(default)]
+    pub registration_export: Option<PathBuf>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RestartReview {
+    pub baseline_boot: u32,
+    pub resolved_boot: Option<u32>,
+}
+impl Session {
+    pub(crate) fn restart_resolved(&self) -> bool {
+        self.state == "resolved-after-restart"
+            && self.error.is_none()
+            && matches!(self.exit_code, Some(0 | 3010 | 1641))
+            && self
+                .restart_review
+                .as_ref()
+                .is_some_and(|r| r.resolved_boot.is_some_and(|boot| boot > r.baseline_boot))
+    }
+    fn terminal(&self) -> bool {
+        self.state == "completed" || self.restart_resolved()
+    }
+    pub(crate) fn needs_registration_export(&self) -> bool {
+        !self.restart_resolved()
+            && (!self.terminal() || matches!(self.exit_code, Some(3010 | 1641)))
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessResult {
@@ -206,7 +236,12 @@ impl Running {
     }
 }
 
-fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Running, u32> {
+fn native_launch(
+    cmd: &UninstallCommand,
+    id: &str,
+    storage: &Path,
+    export: Option<&Path>,
+) -> Result<Running, u32> {
     unsafe {
         let name = format!("Local\\UnboltInstaller-{}", recovery::unique_id());
         let job = CreateJobObjectW(null(), command::wide(&name).as_ptr());
@@ -266,6 +301,9 @@ fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Run
             exit_code: None,
             total_processes: 1,
             error: None,
+            boot_id: crate::session_review::boot_id().ok(),
+            restart_review: None,
+            registration_export: export.map(Path::to_path_buf),
         };
         // Keep a durable record before the suspended target executes any code.
         if save(storage, &session).is_err() {
@@ -287,7 +325,11 @@ fn native_launch(cmd: &UninstallCommand, id: &str, storage: &Path) -> Result<Run
         })
     }
 }
-fn elevated_launch(cmd: &UninstallCommand, id: &str) -> UnboltResult<Running> {
+fn elevated_launch(
+    cmd: &UninstallCommand,
+    id: &str,
+    export: Option<&Path>,
+) -> UnboltResult<Running> {
     unsafe {
         let executable = command::wide(&cmd.executable);
         let verb = command::wide("runas");
@@ -329,17 +371,19 @@ fn elevated_launch(cmd: &UninstallCommand, id: &str) -> UnboltResult<Running> {
                 exit_code: None,
                 total_processes: 1,
                 error: None,
+                boot_id: crate::session_review::boot_id().ok(),
+                restart_review: None,
+                registration_export: export.map(Path::to_path_buf),
             },
         })
     }
 }
-fn save(root: &Path, session: &Session) -> UnboltResult<PathBuf> {
+pub(crate) fn save(root: &Path, session: &Session) -> UnboltResult<PathBuf> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join(format!("{}.json", session.id));
-    let pending = path.with_extension("pending");
+    let pending = root.join(format!("{}.{}.pending", session.id, recovery::unique_id()));
     let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .open(&pending)
         .map_err(|e| e.to_string())?;
@@ -371,17 +415,30 @@ pub fn run_at(
     if cancelled(cancel) {
         return Err("Cancelled before launch".into());
     }
+    let lease = reserve_application(storage, application_id)?;
+    run_reserved(cmd, application_id, cancel, storage, lease, None)
+}
+pub(crate) fn run_reserved(
+    cmd: &UninstallCommand,
+    application_id: &str,
+    cancel: &AtomicBool,
+    storage: &Path,
+    lease: ApplicationLease,
+    export: Option<&Path>,
+) -> UnboltResult<ProcessResult> {
+    if cancelled(cancel) {
+        return Err("Cancelled before launch".into());
+    }
     // Reserve writable session storage before target execution begins.
     fs::create_dir_all(storage).map_err(|e| e.to_string())?;
     let probe = storage.join(format!("{}.probe", recovery::unique_id()));
     fs::write(&probe, b"session").map_err(|e| e.to_string())?;
     fs::remove_file(probe).map_err(|e| e.to_string())?;
-    let lease = reserve_application(storage, application_id)?;
     for session in sessions_at(storage)?
         .into_iter()
         .filter(|s| s.application_id == application_id)
     {
-        if session.state != "completed" {
+        if !session.terminal() {
             return Err(
                 "An earlier installer session requires review before another launch".into(),
             );
@@ -391,9 +448,9 @@ pub fn run_at(
         return Err("Cancelled before launch".into());
     }
     let started = Instant::now();
-    let mut running = match native_launch(cmd, application_id, storage) {
+    let mut running = match native_launch(cmd, application_id, storage, export) {
         Ok(r) => r,
-        Err(740) => elevated_launch(cmd, application_id)?,
+        Err(740) => elevated_launch(cmd, application_id, export)?,
         Err(e) => {
             return Err(format!(
                 "Target did not start; tracked launch failed (Windows error {e})"
@@ -480,7 +537,7 @@ pub fn sessions() -> UnboltResult<Vec<Session>> {
     let root = recovery::data_dir().join("process-sessions");
     sessions_at(&root)
 }
-fn sessions_at(root: &Path) -> UnboltResult<Vec<Session>> {
+pub(crate) fn sessions_at(root: &Path) -> UnboltResult<Vec<Session>> {
     if !root.exists() {
         return Ok(vec![]);
     }
@@ -501,7 +558,7 @@ pub fn assert_idle(application_id: &str) -> UnboltResult<()> {
         .into_iter()
         .filter(|s| s.application_id == application_id)
     {
-        if session.state != "completed" {
+        if !session.terminal() {
             return Err(format!(
                 "Installer session requires review before cleanup: {} ({})",
                 session.state, session.scope
@@ -523,7 +580,7 @@ pub fn assert_cleanup_ready_at(storage: &Path, application_id: &str) -> UnboltRe
         .iter()
         .filter(|s| s.application_id == application_id)
     {
-        if session.state != "completed" {
+        if !session.terminal() {
             return Err(format!(
                 "Cleanup deferred while an installer session needs review: {} ({})",
                 session.state, session.scope
@@ -543,6 +600,7 @@ pub fn assert_cleanup_ready_at(storage: &Path, application_id: &str) -> UnboltRe
                 s.id.clone(),
             )
         })
+        && !session.restart_resolved()
         && (session.error.is_some() || session.exit_code != Some(0))
     {
         return Err(format!(

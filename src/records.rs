@@ -32,7 +32,24 @@ pub struct RecordPage<T> {
 }
 
 pub fn history() -> UnboltResult<RecordPage<HistoryRecord>> {
-    history_at(&recovery::data_dir().join("history.jsonl"))
+    let mut page =
+        history_at(&recovery::data_dir().join("history.jsonl")).unwrap_or_else(|error| {
+            RecordPage {
+                records: vec![],
+                errors: vec![format!("Operation history could not be read: {error}")],
+            }
+        });
+    match crate::session_review::pending_records() {
+        Ok(mut pending) => {
+            pending.records.append(&mut page.records);
+            page.records = pending.records;
+            page.errors.extend(pending.errors);
+        }
+        Err(error) => page.errors.push(format!(
+            "Pending uninstall sessions could not be read: {error}"
+        )),
+    }
+    Ok(page)
 }
 fn history_at(path: &Path) -> UnboltResult<RecordPage<HistoryRecord>> {
     if !path.exists() {
@@ -193,6 +210,31 @@ fn backups_at(root: &Path) -> UnboltResult<RecordPage<BackupRecord>> {
     Ok(RecordPage { records, errors })
 }
 impl HistoryRecord {
+    pub fn can_review_session(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            "uninstall-result" | "uninstall-session-pending"
+        )
+    }
+    pub fn session_review_target(&self) -> UnboltResult<(PathBuf, String)> {
+        if !self.can_review_session() {
+            return Err("Choose a pending uninstall or uninstall result".into());
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&self.detail).map_err(|e| e.to_string())?;
+        let backup = value["backup"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("Saved registration export is missing")?;
+        let session = value["process_session"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("Saved installer session is missing")?;
+        Ok((
+            PathBuf::from(backup).join("application.json"),
+            session.to_owned(),
+        ))
+    }
     pub fn matches(&self, query: &str) -> bool {
         let query = query.to_lowercase();
         let operation = operation_label(&self.kind);
@@ -245,6 +287,8 @@ pub fn operation_label(kind: &str) -> String {
     match kind {
         "uninstall-start" => "Uninstall started".into(),
         "uninstall-result" => "Uninstall result".into(),
+        "uninstall-session-pending" => "Pending uninstall".into(),
+        "uninstall-session-review" => "Uninstall session reviewed".into(),
         "uninstall-launch-failed" => "Uninstaller launch failed".into(),
         "quarantine" => "Files quarantined".into(),
         "restore" => "Files restored".into(),

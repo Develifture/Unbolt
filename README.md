@@ -10,7 +10,7 @@ The portable app uses a native Windows interface with light and dark themes, key
 
 ## Download and get started
 
-1. Open [GitHub Releases](https://github.com/Develifture/Unbolt/releases/latest) and download **Unbolt-0.1.0-windows-x64.zip**.
+1. Open [GitHub Releases](https://github.com/Develifture/Unbolt/releases/latest) and download **Unbolt-0.1.1-windows-x64.zip**.
 2. Extract the ZIP. Keep **Unbolt.exe**, **UnboltCLI.exe**, and **UnboltHelper.exe** together.
 3. Open **Unbolt.exe**, select an application, and choose **Uninstall selected** or **Preview leftovers**.
 4. Review the results. Eligible leftovers are removed only after you choose **Clean checked** and confirm.
@@ -64,9 +64,13 @@ No. Previewing leftovers is read-only. After an uninstall, Unbolt opens a leftov
 
 A checked box does not establish ownership. Ordinary cleanup accepts supported High-confidence items only. Shared folders, protected locations, and reparse points stay Blocked; name-only matches need further review. Unresolved registration, process monitoring, or reboot status can also prevent cleanup.
 
+For a completed uninstall awaiting restart or process review, restart Windows, open **Operation history**, select **Pending uninstall** or its **Uninstall result**, and choose **Review pending uninstall**. Pending entries are discovered from saved session/export records even if the history entry is missing or expired. Unbolt checks the saved registration, recorded processes, and supported folder usage again before offering to resolve that session. Then use **Backups & recovery → Review leftovers** for a fresh scan. Other pending or failed sessions still block cleanup.
+
+Older session records lack a boot reference. Their first confirmed review records the current boot; restart Windows and review again. The saved registration export must still exist. New sessions record the exact export; older sessions with conflicting export snapshots require further recovery review. If Windows boot information or process/application state cannot be verified, the session remains blocked. This action does not remove application data.
+
 ### Can I delete the recovery backups?
 
-Yes. In **Backups & recovery**, select records and choose **Delete selected**. After confirmation, Unbolt permanently discards those recovery copies. This does not delete the original application files or re-enable a disabled startup entry. Unfinished backup states require recovery review first.
+Yes. In **Backups & recovery**, select records and choose **Delete selected**. After confirmation, Unbolt permanently discards those recovery copies. This does not delete the original application files or re-enable a disabled startup entry. Unfinished backup states require recovery review first. Registration exports are retained while an installer is active or a pending uninstall needs them; resolve the supported pending result in **Operation history** before deleting its export.
 
 ### Can Unbolt undo a complete application uninstall?
 
@@ -78,7 +82,7 @@ Yes. The source is [MIT licensed](LICENSE), and the Windows x64 release runs fro
 
 ### Does Unbolt remove Microsoft Store apps or browser extensions?
 
-Those workflows are outside version 0.1.0. This release focuses on registered desktop applications and the supported cleanup and startup operations described above.
+Those workflows are outside version 0.1.1. This release focuses on registered desktop applications and the supported cleanup and startup operations described above.
 
 ## Documentation
 
@@ -110,7 +114,7 @@ Use exact inventory IDs when names are ambiguous. Helper-check verifies the adja
 
 ## Supported scope and validation
 
-Version 0.1.0 is the first public release. It covers the operations above; it is not a full-drive ownership scanner.
+Version 0.1.1 includes fixes from the full-application review. It covers the operations above; it is not a full-drive ownership scanner.
 
 Actual elevated operations, alternate-account behavior, delegated installer services, reboot continuation, and complete recovery scenarios still need disposable-VM validation. Filesystem metadata checks do not atomically exclude every independent concurrent write. The unsigned administrator component has not passed an independent privileged-security audit.
 
@@ -125,7 +129,7 @@ Use Windows x64, Rust 1.98 or newer, the MSVC toolchain, and Windows SDK build t
     cargo clippy --locked --all-targets --features test-fixtures -- -D warnings
     powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
-The package script creates Unbolt-0.1.0-windows-x64 with only the three production executables, documentation, dependency notices, and a file-hash manifest. Fixture executables are excluded. Tests are retained in the source repository to verify supported behavior.
+The package script creates Unbolt-0.1.1-windows-x64 with only the three production executables, documentation, dependency notices, and a file-hash manifest. Fixture executables are excluded. Tests are retained in the source repository to verify supported behavior.
 
 ## Help and contributions
 
